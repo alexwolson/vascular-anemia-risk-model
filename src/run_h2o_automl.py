@@ -1,14 +1,16 @@
-"""Train H2O AutoML models for each output variable in the VQI dataset."""
+"""Train H2O AutoML models aligned with the replication checklist."""
 
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 from dataclasses import dataclass
-from typing import Iterable, List, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 import h2o
@@ -21,6 +23,7 @@ DEFAULT_METADATA_PATH = (
     REPO_ROOT / "data" / "processed" / "merged_vqi_2012_2020_metadata.csv"
 )
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "artifacts" / "h2o_automl"
+DEFAULT_MODEL_DIR = REPO_ROOT / "models"
 
 
 @dataclass(frozen=True)
@@ -33,10 +36,7 @@ class TargetSpec:
 
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description=(
-            "Train H2O AutoML models for each output variable defined in the "
-            "processed dataset metadata."
-        )
+        description="Train H2O AutoML models for selected outcomes using the processed VQI dataset.",
     )
     parser.add_argument(
         "--data-path",
@@ -58,6 +58,18 @@ def parse_arguments() -> argparse.Namespace:
         type=Path,
         default=DEFAULT_OUTPUT_DIR,
         help=f"Directory to persist AutoML leaderboards and summary (default: {DEFAULT_OUTPUT_DIR}).",
+    )
+    parser.add_argument(
+        "--model-dir",
+        type=Path,
+        default=DEFAULT_MODEL_DIR,
+        help=f"Directory to persist trained model artifacts (default: {DEFAULT_MODEL_DIR}).",
+    )
+    parser.add_argument(
+        "--targets",
+        nargs="+",
+        default=["DEAD"],
+        help="Subset of target columns to train. Use 'all' to include every output (default: DEAD).",
     )
     parser.add_argument(
         "--train-ratio",
@@ -104,6 +116,11 @@ def parse_arguments() -> argparse.Namespace:
         help="Enable class balancing for classification targets.",
     )
     parser.add_argument(
+        "--disable-stratify",
+        action="store_true",
+        help="Disable stratified 80/20 split for classification targets.",
+    )
+    parser.add_argument(
         "--no-shutdown",
         action="store_true",
         help="Skip shutting down the H2O cluster when finishing.",
@@ -143,10 +160,16 @@ def determine_predictors(metadata: pd.DataFrame, dataset_columns: Iterable[str])
 
 
 def determine_targets(
-    metadata: pd.DataFrame, dataset: pd.DataFrame, categorical_threshold: int
+    metadata: pd.DataFrame,
+    dataset: pd.DataFrame,
+    categorical_threshold: int,
+    selected_targets: Optional[Iterable[str]],
 ) -> List[TargetSpec]:
-    targets = []
+    targets: List[TargetSpec] = []
+    selected = set(selected_targets) if selected_targets is not None else None
     for column in metadata.loc[metadata["feature_role"] == "output", "column"]:
+        if selected is not None and column not in selected:
+            continue
         if column not in dataset.columns:
             logging.warning("Target column '%s' not present in dataset. Skipping.", column)
             continue
@@ -165,9 +188,7 @@ def determine_targets(
     return targets
 
 
-def build_automl(
-    args: argparse.Namespace, target: TargetSpec
-) -> H2OAutoML:
+def build_automl(args: argparse.Namespace, target: TargetSpec) -> H2OAutoML:
     kwargs = {
         "max_runtime_secs": args.max_runtime_secs,
         "seed": args.seed,
@@ -181,17 +202,46 @@ def build_automl(
     return H2OAutoML(**kwargs)
 
 
-def ensure_output_dir(path: Path) -> None:
+def ensure_directory(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
-def split_frame(
-    frame, train_ratio: float, seed: int
-) -> Tuple[object, object]:
-    splits = frame.split_frame(ratios=[train_ratio], seed=seed)
-    if len(splits) < 2:
-        raise RuntimeError("H2O split_frame did not return the expected train/validation split.")
-    return splits[0], splits[1]
+def train_valid_split(
+    dataset: pd.DataFrame,
+    target_column: str,
+    train_ratio: float,
+    seed: int,
+    stratify: bool,
+    problem_type: str,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    rng = np.random.default_rng(seed)
+    if stratify and problem_type == "classification":
+        train_indices: List[int] = []
+        valid_indices: List[int] = []
+        for _, group in dataset.groupby(target_column, dropna=False):
+            group_idx = group.index.to_numpy()
+            rng.shuffle(group_idx)
+            train_count = int(round(len(group_idx) * train_ratio))
+            if len(group_idx) > 1 and train_count >= len(group_idx):
+                train_count = len(group_idx) - 1
+            valid_count = len(group_idx) - train_count
+            if valid_count == 0 and len(group_idx) > 0:
+                train_count = max(0, train_count - 1)
+                valid_count = len(group_idx) - train_count
+            train_indices.extend(group_idx[:train_count])
+            valid_indices.extend(group_idx[train_count:])
+        return dataset.loc[train_indices].copy(), dataset.loc[valid_indices].copy()
+
+    indices = dataset.index.to_numpy()
+    rng.shuffle(indices)
+    cutoff = int(round(len(indices) * train_ratio))
+    cutoff = min(len(indices), max(1, cutoff))
+    train_idx = indices[:cutoff]
+    valid_idx = indices[cutoff:]
+    if len(valid_idx) == 0 and len(indices) > 1:
+        train_idx = indices[:-1]
+        valid_idx = indices[-1:]
+    return dataset.loc[train_idx].copy(), dataset.loc[valid_idx].copy()
 
 
 def extract_primary_metric(perf, problem_type: str) -> Tuple[str, float | None]:
@@ -220,18 +270,75 @@ def extract_primary_metric(perf, problem_type: str) -> Tuple[str, float | None]:
     return "metric", None
 
 
+def first_model_with_prefix(
+    leaderboard: pd.DataFrame, prefixes: Tuple[str, ...]
+) -> Optional[str]:
+    mask = leaderboard["model_id"].str.startswith(prefixes)
+    matches = leaderboard.loc[mask, "model_id"]
+    if matches.empty:
+        return None
+    return matches.iloc[0]
+
+
+def summarise_model_families(leaderboard: pd.DataFrame, metric_column: str) -> pd.DataFrame:
+    families: Dict[str, Tuple[str, ...]] = {
+        "StackedEnsemble": ("StackedEnsemble",),
+        "GBM": ("GBM",),
+        "XRT": ("XRT", "DRF"),
+        "GLM": ("GLM",),
+        "DeepLearning": ("DeepLearning",),
+    }
+    records = []
+    for label, prefixes in families.items():
+        mask = leaderboard["model_id"].str.startswith(prefixes)
+        if not mask.any():
+            continue
+        row = leaderboard.loc[mask].iloc[0]
+        records.append(
+            {
+                "family": label,
+                "model_id": row["model_id"],
+                "metric": row.get(metric_column),
+            }
+        )
+    return pd.DataFrame(records)
+
+
 def run_for_target(
     args: argparse.Namespace,
-    h2o_frame,
+    dataset: pd.DataFrame,
     predictors: List[str],
     target: TargetSpec,
 ) -> dict:
     logging.info("=== Training target '%s' (%s) ===", target.name, target.problem_type)
-    # Create a view that we can safely modify without affecting subsequent runs.
-    frame = h2o_frame[:, :]
+
+    columns = predictors + [target.name]
+    working = dataset[columns].dropna(subset=[target.name])
+
+    stratify = not args.disable_stratify
+    train_df, valid_df = train_valid_split(
+        working,
+        target.name,
+        args.train_ratio,
+        args.seed,
+        stratify=stratify,
+        problem_type=target.problem_type,
+    )
+
+    train = h2o.H2OFrame(train_df)
+    valid = h2o.H2OFrame(valid_df)
+
+    categorical_predictors = [
+        column for column in predictors if pd.api.types.is_categorical_dtype(dataset[column])
+    ]
+    for column in categorical_predictors:
+        train[column] = train[column].asfactor()
+        valid[column] = valid[column].asfactor()
+
     if target.problem_type == "classification":
-        frame[target.name] = frame[target.name].asfactor()
-    train, valid = split_frame(frame, args.train_ratio, args.seed)
+        train[target.name] = train[target.name].asfactor()
+        valid[target.name] = valid[target.name].asfactor()
+
     aml = build_automl(args, target)
     aml.train(x=predictors, y=target.name, training_frame=train, leaderboard_frame=valid)
 
@@ -242,6 +349,44 @@ def run_for_target(
 
     perf = aml.leader.model_performance(valid)
     metric_name, metric_value = extract_primary_metric(perf, target.problem_type)
+
+    family_summary = summarise_model_families(leaderboard, metric_name)
+    family_summary_path = args.output_dir / f"{target.name}_top_models.csv"
+    family_summary.to_csv(family_summary_path, index=False)
+    logging.info("Saved model family summary to %s", family_summary_path)
+
+    gbm_model_id = first_model_with_prefix(leaderboard, ("GBM",))
+    saved_model_path: Optional[Path] = None
+    if gbm_model_id:
+        target_model_dir = args.model_dir / target.name
+        ensure_directory(target_model_dir)
+        gbm_model = h2o.get_model(gbm_model_id)
+        saved_model_path = Path(
+            h2o.save_model(gbm_model, path=str(target_model_dir), force=True)
+        )
+        logging.info("Saved GBM model to %s", saved_model_path)
+
+    run_metadata_path = args.output_dir / f"{target.name}_run_metadata.json"
+    run_metadata = {
+        "target": target.name,
+        "problem_type": target.problem_type,
+        "predictors": predictors,
+        "train_rows": int(train.nrows),
+        "valid_rows": int(valid.nrows),
+        "train_ratio": args.train_ratio,
+        "seed": args.seed,
+        "stratified": stratify and target.problem_type == "classification",
+        "metric": metric_name,
+        "metric_value": metric_value,
+        "leader_model_id": aml.leader.model_id,
+        "gbm_model_id": gbm_model_id,
+        "gbm_model_path": str(saved_model_path) if saved_model_path else None,
+        "leaderboard_path": str(leaderboard_path),
+        "family_summary_path": str(family_summary_path),
+    }
+    run_metadata_path.write_text(json.dumps(run_metadata, indent=2))
+    logging.info("Saved run metadata to %s", run_metadata_path)
+
     summary = {
         "target": target.name,
         "problem_type": target.problem_type,
@@ -249,6 +394,12 @@ def run_for_target(
         "metric_value": metric_value,
         "leader_model_id": aml.leader.model_id,
         "leaderboard_path": str(leaderboard_path),
+        "family_summary_path": str(family_summary_path),
+        "gbm_model_path": str(saved_model_path) if saved_model_path else "",
+        "run_metadata_path": str(run_metadata_path),
+        "train_ratio": args.train_ratio,
+        "seed": args.seed,
+        "stratified": stratify and target.problem_type == "classification",
     }
     return summary
 
@@ -269,19 +420,27 @@ def main() -> None:
     metadata = read_metadata(args.metadata_path)
 
     predictors = determine_predictors(metadata, dataset.columns)
-    targets = determine_targets(metadata, dataset, args.categorical_threshold)
-    ensure_output_dir(args.output_dir)
+    if args.targets and len(args.targets) == 1 and args.targets[0].lower() == "all":
+        requested_targets: Optional[Iterable[str]] = None
+    else:
+        requested_targets = args.targets
+    targets = determine_targets(
+        metadata,
+        dataset,
+        args.categorical_threshold,
+        selected_targets=requested_targets,
+    )
+
+    ensure_directory(args.output_dir)
+    ensure_directory(args.model_dir)
 
     logging.info("Initialising H2O cluster...")
     h2o.init()
 
-    # Convert to H2OFrame; ensure categorical columns are preserved.
-    h2o_frame = h2o.H2OFrame(dataset)
-
     summaries = []
     for target in targets:
         try:
-            summary = run_for_target(args, h2o_frame, predictors, target)
+            summary = run_for_target(args, dataset, predictors, target)
             summaries.append(summary)
         except Exception as error:  # pragma: no cover - defensive logging
             logging.exception("Failed to train target '%s': %s", target.name, error)

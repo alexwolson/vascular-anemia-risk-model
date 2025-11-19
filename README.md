@@ -1,28 +1,55 @@
-# Vascular Anemia Risk Model Utilities
+# Preoperative Hemoglobin ML Replication
 
-This repository contains utilities for working with the harmonised VQI dataset and training risk models.
+This repository rebuilds the analysis from _“Preoperative hemoglobin in vascular surgery”_, with the goal of deriving age-specific hemoglobin thresholds that minimize postoperative mortality for open vascular procedures.
 
-## H2O AutoML Training
+## Study Overview
 
-The script at `src/run_h2o_automl.py` fits one H2O AutoML model per output variable defined in the processed metadata and writes leaderboards plus a summary CSV to an artifacts directory.
+- **Study aim**: Use machine learning to estimate age-specific preoperative hemoglobin ranges associated with <10% predicted mortality following open vascular surgery.
+- **Data source**: Vascular Quality Initiative (VQI) registry extracts (2012–2020) for infrainguinal bypass, suprainguinal bypass, and open abdominal aortic aneurysm (AAA) repair.
+- **Primary outcome**: All-cause mortality during registry follow-up (`DEAD`).
+- **Primary model**: Gradient Boosting Machine (GBM) selected via H2O AutoML, interpreted with SHAP values and partial dependence plots.
 
-Run the workflow with `uv run`:
+## Repository Layout
 
 ```
-uv run python src/run_h2o_automl.py \
-  --data-path ./data/processed/merged_vqi_2012_2020.parquet \
-  --metadata-path ./data/processed/merged_vqi_2012_2020_metadata.csv \
-  --output-dir ./artifacts/h2o_automl
+artifacts/              # Experiment outputs (leaderboards, notebooks, figures)
+config/                 # Environment manifests and model/data configuration
+data/
+  raw/                  # PHI/PII-restricted VQI extracts (not versioned)
+  processed/            # Harmonized analytic dataset + metadata
+figures/                # Generated plots (ROC, SHAP, PDP)
+models/                 # Serialized H2O models (ignored in git)
+notebooks/              # Exploratory and replication notebooks
+src/                    # Reproducible pipeline scripts
+tables/                 # Published table exports (CSV/LaTeX)
 ```
 
-Key options:
+## Quick Start
 
-- `--max-runtime-secs`: time budget per AutoML run (default 600).
-- `--max-models`: cap the number of models per run.
-- `--train-ratio`: adjust the train/validation split (default 0.8).
-- `--balance-classes`: enable class balancing for classification targets.
-- `--no-shutdown`: keep the H2O cluster running after the script finishes.
+1. Install the locked environment:
 
-Each AutoML run writes `<TARGET>_leaderboard.csv` and appends a row to `summary.csv` inside the chosen output directory. Classification targets are automatically detected when the response column has a categorical dtype or fewer than the configurable number of distinct values (default 10).
+   ```
+   uv sync
+   ```
 
+2. Rebuild the harmonized dataset (expects VQI Excel extracts under `data/raw/`):
 
+   ```
+   uv run python src/build_vqi_dataset.py
+   ```
+
+3. Train AutoML models for the mortality endpoint:
+
+   ```
+   uv run python src/run_h2o_automl.py --max-runtime-secs 900 --balance-classes
+   ```
+
+4. (Upcoming) Generate interpretability outputs and tables via `make figures` / `make tables`.
+
+## Reproducibility Status
+
+- ✅ Dataset harmonization script covering the 30 preoperative and 14 postoperative variables.
+- ⚠️ AutoML pipeline and interpretability outputs under active development (see `align.plan.md`).
+- ⏳ SHAP, PDP, and age-stratified threshold workflows pending implementation.
+
+Please see `ML_Hgb_replication_checklist.md` for the full replication specification.

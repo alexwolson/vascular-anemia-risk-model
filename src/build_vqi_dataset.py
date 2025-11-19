@@ -26,7 +26,7 @@ PROCEDURE_SHEETS = {
     "OPEN_AAA": "OPEN_AAA_Database_",
 }
 
-# Final predictor set: 30 pre-operative predictors + 13 postoperative descriptors.
+# Final predictor set: 30 pre-operative predictors + 14 postoperative descriptors.
 PREOP_FEATURES: List[str] = [
     "DIABETES",
     "SEX",
@@ -48,7 +48,6 @@ PREOP_FEATURES: List[str] = [
     "ETHNICITY",
     "PREOP_AMBUL",
     "ASACLASS",
-    "ANTIBIOTICGEN",
     "PRIOR_CABG",
     "PRIOR_CEACAS",
     "PRIOR_PCI",
@@ -56,7 +55,7 @@ PREOP_FEATURES: List[str] = [
     "PREOP_ANTICOAG",
     "AGE",
     "HTCM",
-    "WTLB",
+    "WEIGHT_KG",
     "HEMO",
     "PREOP_CREAT",
 ]
@@ -65,8 +64,9 @@ POSTOP_FEATURES: List[str] = [
     "RTOR",
     "POSTOP_DYS",
     "ANTIBIOTICSTART",
-    "LTF_CALC",
     "ANTIBIOTICEND",
+    "ANTIBIOTICGEN",
+    "LTF_CALC",
     "DC_STATUS",
     "RESPIRATORY",
     "POSTOP_MI",
@@ -107,6 +107,11 @@ COLUMN_ALIASES: Dict[str, Dict[str, str]] = {
         "SUPRA": "PREOP_CREAT",
         "OPEN_AAA": "PREOP_CREAT",
     },
+    "WEIGHT_KG": {
+        "INFRA": "WTLB",
+        "SUPRA": "WTLB",
+        "OPEN_AAA": "WTLB",
+    },
     "TXFUSION": {"INFRA": "PRBC", "SUPRA": "TXFUSION", "OPEN_AAA": "TXFUSION"},
     "DIALYSIS": {"SUPRA": "PREOP_DIALYSIS"},
 }
@@ -133,7 +138,6 @@ CATEGORICAL_FEATURES = {
     "ETHNICITY",
     "PREOP_AMBUL",
     "ASACLASS",
-    "ANTIBIOTICGEN",
     "PRIOR_CABG",
     "PRIOR_CEACAS",
     "PRIOR_PCI",
@@ -143,6 +147,7 @@ CATEGORICAL_FEATURES = {
     "POSTOP_DYS",
     "ANTIBIOTICSTART",
     "ANTIBIOTICEND",
+    "ANTIBIOTICGEN",
     "DC_STATUS",
     "RESPIRATORY",
     "POSTOP_MI",
@@ -180,6 +185,18 @@ def resolve_column(procedure: str, column: str, frame: pd.DataFrame) -> pd.Serie
                 f"Column '{source}' (mapped to '{column}') in {procedure} "
                 "contains only empty strings."
             )
+
+    if column == "WEIGHT_KG":
+        numeric = pd.to_numeric(series, errors="coerce")
+        if numeric.notna().any():
+            source_name = (alias or source or "").lower()
+            if "lb" in source_name:
+                converted = numeric * 0.45359237
+            else:
+                converted = numeric
+        else:
+            converted = numeric
+        return converted
 
     return series
 
