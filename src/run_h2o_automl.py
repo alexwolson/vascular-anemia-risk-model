@@ -218,7 +218,7 @@ def train_valid_split(
     if stratify and problem_type == "classification":
         train_indices: List[int] = []
         valid_indices: List[int] = []
-        for _, group in dataset.groupby(target_column, dropna=False):
+        for _, group in dataset.groupby(target_column, dropna=False, observed=False):
             group_idx = group.index.to_numpy()
             rng.shuffle(group_idx)
             train_count = int(round(len(group_idx) * train_ratio))
@@ -329,7 +329,9 @@ def run_for_target(
     valid = h2o.H2OFrame(valid_df)
 
     categorical_predictors = [
-        column for column in predictors if pd.api.types.is_categorical_dtype(dataset[column])
+        column
+        for column in predictors
+        if isinstance(dataset[column].dtype, pd.CategoricalDtype)
     ]
     for column in categorical_predictors:
         train[column] = train[column].asfactor()

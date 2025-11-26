@@ -1,13 +1,21 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-Source code lives in `src/`, with `build_vqi_dataset.py` harmonizing raw VQI spreadsheets into a parquet/CSV pair under `data/processed/`, and `run_h2o_automl.py` orchestrating H2O AutoML training outputs inside `artifacts/h2o_automl/`. Input data belongs in `data/raw/`; derived assets stay under `data/processed/` so regeneration is deterministic. Treat `artifacts/` as disposable experiment output—do not check large models into Git. Keep any exploratory notebooks or diagnostics in `artifacts/notebooks/` (git-ignored by default) to keep the root tidy.
+Source code lives in `src/`:
+- `build_vqi_dataset.py`: Harmonizes raw VQI spreadsheets into a parquet/CSV pair under `data/processed/`.
+- `validate_dataset_schema.py`: Verifies the harmonized dataset against the replication checklist and writes a report to `data/processed/`.
+- `run_h2o_automl.py`: Orchestrates H2O AutoML training, outputting models and metadata to `artifacts/h2o_automl/`.
+- `generate_interpretability.py`: Produces ROC curves, SHAP plots, and partial dependence plots for trained models, saving to `figures/` and `tables/`.
+
+Input data belongs in `data/raw/`; derived assets stay under `data/processed/`. Treat `artifacts/` as disposable experiment output. `figures/` and `tables/` hold final publication-ready assets. Keep any exploratory notebooks in `artifacts/notebooks/` (git-ignored by default) or `notebooks/` to keep the root tidy.
 
 ## Build, Test, and Development Commands
 - `uv sync` — install Python 3.11 dependencies from `pyproject.toml`/`uv.lock`.
-- `uv run python src/build_vqi_dataset.py` — rebuild the harmonized dataset; rerun whenever `data/raw/` changes.
-- `uv run python src/run_h2o_automl.py --max-runtime-secs 900 --balance-classes` — launch reference AutoML runs and write leaderboards to `artifacts/h2o_automl/`.
-- `uv run python -m pytest tests` — execute the test suite (see below for layout expectations).
+- `uv run python src/build_vqi_dataset.py` — rebuild the harmonized dataset.
+- `uv run python src/validate_dataset_schema.py` — check dataset integrity and generate a schema report.
+- `uv run python src/run_h2o_automl.py --max-runtime-secs 900 --balance-classes` — launch reference AutoML runs.
+- `uv run python src/generate_interpretability.py` — generate plots and tables from the latest run metadata.
+- `uv run python -m pytest tests` — execute the test suite.
 Prefer `uv run …` so the resolved environment matches CI.
 
 ## Coding Style & Naming Conventions
