@@ -235,12 +235,15 @@ def partial_dependence_plot(
     data_hist: pd.Series,
 ) -> pd.DataFrame:
     plots = model.partial_plot(
-        data=data,
+        frame=data,
         cols=[column],
         nbins=nbins,
         plot=False,
     )
-    pdp_df = plots[0].as_data_frame(use_pandas=True)
+    pdp_df = plots[0].as_data_frame()
+    # H2O names the x-column after the feature (lowercase); normalise for downstream code
+    x_col = [c for c in pdp_df.columns if c not in ("mean_response", "stddev_response", "std_error_mean_response")][0]
+    pdp_df = pdp_df.rename(columns={x_col: "center"})
     pdp_table_path = tables_dir / f"dead_gbm_pdp_{column.lower()}.csv"
     pdp_df.to_csv(pdp_table_path, index=False)
     logging.info("Saved PDP table for %s to %s", column, pdp_table_path)
@@ -328,9 +331,11 @@ def derive_hemoglobin_thresholds(
         )
 
         pdp_frames = model.partial_plot(
-            data=group_h2o, cols=["HEMO"], nbins=nbins, plot=False
+            frame=group_h2o, cols=["HEMO"], nbins=nbins, plot=False
         )
-        pdp_df = pdp_frames[0].as_data_frame(use_pandas=True)
+        pdp_df = pdp_frames[0].as_data_frame()
+        x_col = [c for c in pdp_df.columns if c not in ("mean_response", "stddev_response", "std_error_mean_response")][0]
+        pdp_df = pdp_df.rename(columns={x_col: "center"})
 
         for cutoff in cutoffs:
             mask = pdp_df["mean_response"] < cutoff

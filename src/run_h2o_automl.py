@@ -126,6 +126,12 @@ def parse_arguments() -> argparse.Namespace:
         help="Skip shutting down the H2O cluster when finishing.",
     )
     parser.add_argument(
+        "--exclude-features",
+        nargs="*",
+        default=[],
+        help="Predictor columns to exclude from training (e.g. --exclude-features URGENCY).",
+    )
+    parser.add_argument(
         "--log-level",
         default="INFO",
         choices=("DEBUG", "INFO", "WARNING", "ERROR"),
@@ -219,7 +225,7 @@ def train_valid_split(
         train_indices: List[int] = []
         valid_indices: List[int] = []
         for _, group in dataset.groupby(target_column, dropna=False, observed=False):
-            group_idx = group.index.to_numpy()
+            group_idx = group.index.to_numpy().copy()
             rng.shuffle(group_idx)
             train_count = int(round(len(group_idx) * train_ratio))
             if len(group_idx) > 1 and train_count >= len(group_idx):
@@ -232,7 +238,7 @@ def train_valid_split(
             valid_indices.extend(group_idx[train_count:])
         return dataset.loc[train_indices].copy(), dataset.loc[valid_indices].copy()
 
-    indices = dataset.index.to_numpy()
+    indices = dataset.index.to_numpy().copy()
     rng.shuffle(indices)
     cutoff = int(round(len(indices) * train_ratio))
     cutoff = min(len(indices), max(1, cutoff))
@@ -422,6 +428,10 @@ def main() -> None:
     metadata = read_metadata(args.metadata_path)
 
     predictors = determine_predictors(metadata, dataset.columns)
+    if args.exclude_features:
+        excluded = set(args.exclude_features)
+        predictors = [p for p in predictors if p not in excluded]
+        logging.info("Excluded features: %s. Using %d predictors.", excluded, len(predictors))
     if args.targets and len(args.targets) == 1 and args.targets[0].lower() == "all":
         requested_targets: Optional[Iterable[str]] = None
     else:

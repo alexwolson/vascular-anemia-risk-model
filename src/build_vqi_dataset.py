@@ -26,7 +26,7 @@ PROCEDURE_SHEETS = {
     "OPEN_AAA": "OPEN_AAA_Database_",
 }
 
-# Final predictor set: 30 pre-operative predictors + 14 postoperative descriptors.
+# Final predictor set: 31 pre-operative predictors + 14 postoperative descriptors.
 PREOP_FEATURES: List[str] = [
     "DIABETES",
     "SEX",
@@ -53,6 +53,7 @@ PREOP_FEATURES: List[str] = [
     "PRIOR_PCI",
     "PREOP_ACE",
     "PREOP_ANTICOAG",
+    "URGENCY",
     "AGE",
     "HTCM",
     "WEIGHT_KG",
@@ -143,6 +144,7 @@ CATEGORICAL_FEATURES = {
     "PRIOR_PCI",
     "PREOP_ACE",
     "PREOP_ANTICOAG",
+    "URGENCY",
     "RTOR",
     "POSTOP_DYS",
     "ANTIBIOTICSTART",
@@ -231,6 +233,52 @@ def cast_types(frame: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
+def clean_sentinel_values(frame: pd.DataFrame) -> pd.DataFrame:
+    """Replace sentinel and implausible values with NaN.
+
+    Cleaning rules
+    --------------
+    HEMO        : values outside [2.0, 20.0] g/dL -> NaN
+    PREOP_CREAT : values > 25.0 mg/dL             -> NaN
+    HTCM        : values == 0.0                    -> NaN
+    WEIGHT_KG   : values == 0.0                    -> NaN
+    TXFUSION    : values > 50                      -> NaN
+    """
+    result = frame.copy()
+
+    # HEMO: [2.0, 20.0] g/dL is the clinically plausible range
+    mask = ~result["HEMO"].between(2.0, 20.0) & result["HEMO"].notna()
+    n = mask.sum()
+    result.loc[mask, "HEMO"] = pd.NA
+    print(f"  HEMO: {n} values outside [2.0, 20.0] g/dL set to NaN")
+
+    # PREOP_CREAT: > 25.0 catches 999.0 sentinels
+    mask = (result["PREOP_CREAT"] > 25.0) & result["PREOP_CREAT"].notna()
+    n = mask.sum()
+    result.loc[mask, "PREOP_CREAT"] = pd.NA
+    print(f"  PREOP_CREAT: {n} values > 25.0 mg/dL set to NaN")
+
+    # HTCM: zero height is data-entry error
+    mask = (result["HTCM"] == 0.0) & result["HTCM"].notna()
+    n = mask.sum()
+    result.loc[mask, "HTCM"] = pd.NA
+    print(f"  HTCM: {n} zero values set to NaN")
+
+    # WEIGHT_KG: zero weight is data-entry error
+    mask = (result["WEIGHT_KG"] == 0.0) & result["WEIGHT_KG"].notna()
+    n = mask.sum()
+    result.loc[mask, "WEIGHT_KG"] = pd.NA
+    print(f"  WEIGHT_KG: {n} zero values set to NaN")
+
+    # TXFUSION: > 50 units is implausible
+    mask = (result["TXFUSION"] > 50) & result["TXFUSION"].notna()
+    n = mask.sum()
+    result.loc[mask, "TXFUSION"] = pd.NA
+    print(f"  TXFUSION: {n} values > 50 units set to NaN")
+
+    return result
+
+
 def main() -> None:
     print("Loading Excel file...")
     excel = pd.ExcelFile(RAW_EXCEL)
@@ -246,7 +294,10 @@ def main() -> None:
     merged = pd.concat(cohorts, axis=0, ignore_index=True)
     merged = cast_types(merged)
 
-    print("Casting types...")
+    print("Cleaning sentinel and implausible values...")
+    merged = clean_sentinel_values(merged)
+
+    print("Checking row counts...")
     if len(merged) != expected_rows:
         raise ValueError(
             f"Row count mismatch: expected {expected_rows}, found {len(merged)}"

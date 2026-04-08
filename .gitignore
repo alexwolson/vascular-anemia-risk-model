@@ -1,6 +1,19 @@
 data/
 artifacts/
 models/
+models_30feat/
+output/
+
+# Legacy/archive research workspace (contains duplicate code and raw exports)
+old_code/
+
+# Generated publication outputs (regenerable)
+figures/
+tables/
+
+# Local agent and session notes
+docs/plans/
+coding-agent-fix-brief.md
 
 # Python bytecode
 __pycache__/
@@ -19,3 +32,13 @@ env/
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Environment and secret-like files
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
