@@ -13,6 +13,7 @@ DATA_DIR = REPO_ROOT / "data"
 RAW_DIR = DATA_DIR / "raw"
 PROCESSED_DIR = DATA_DIR / "processed"
 RAW_EXCEL = RAW_DIR / "VQI_Database_MTAEdits.xlsx"
+LEGACY_RAW_EXCEL = DATA_DIR / "VQI_Database_MTAEdits.xlsx"
 PROCESSED_PARQUET = PROCESSED_DIR / "merged_vqi_2012_2020.parquet"
 PROCESSED_METADATA = PROCESSED_DIR / "merged_vqi_2012_2020_metadata.csv"
 
@@ -75,7 +76,7 @@ POSTOP_FEATURES: List[str] = [
     "POSTOP_LOS",
     "TXFUSION",
     "PROC_SURVIVALDAYS",
-    "DEAD"
+    "DEAD",
 ]
 
 FINAL_COLUMNS: List[str] = PREOP_FEATURES + POSTOP_FEATURES
@@ -154,10 +155,30 @@ CATEGORICAL_FEATURES = {
     "RESPIRATORY",
     "POSTOP_MI",
     "POSTOP_STROKE",
-    "DEAD"
+    "DEAD",
 }
 
 NUMERIC_FEATURES = set(FINAL_COLUMNS) - CATEGORICAL_FEATURES
+
+
+def validate_raw_excel_file(path: Path) -> None:
+    """Fail fast when the raw input is missing or not a real workbook."""
+    if not path.exists():
+        raise FileNotFoundError(
+            "Raw VQI workbook not found at "
+            f"'{path}'. Place the source file at this canonical location.\n"
+            "If your workbook is currently at data/VQI_Database_MTAEdits.xlsx, run:\n"
+            "cp data/VQI_Database_MTAEdits.xlsx data/raw/VQI_Database_MTAEdits.xlsx"
+        )
+
+    header = path.read_bytes()[:4]
+    if not header.startswith(b"PK"):
+        raise ValueError(
+            "Raw input at "
+            f"'{path}' is not a valid .xlsx workbook. "
+            "The file appears to be a text placeholder or corrupted file.\n"
+            "Replace it with the real workbook at the canonical path."
+        )
 
 
 def resolve_column(procedure: str, column: str, frame: pd.DataFrame) -> pd.Series:
@@ -223,11 +244,7 @@ def cast_types(frame: pd.DataFrame) -> pd.DataFrame:
     result = frame.copy()
     result["PROCEDURE_GROUP"] = result["PROCEDURE_GROUP"].astype("category")
     for column in CATEGORICAL_FEATURES:
-        result[column] = (
-            result[column]
-            .astype("string")
-            .astype("category")
-        )
+        result[column] = result[column].astype("string").astype("category")
     for column in NUMERIC_FEATURES:
         result[column] = pd.to_numeric(result[column], errors="coerce")
     return result
@@ -281,6 +298,12 @@ def clean_sentinel_values(frame: pd.DataFrame) -> pd.DataFrame:
 
 def main() -> None:
     print("Loading Excel file...")
+    if LEGACY_RAW_EXCEL.exists() and LEGACY_RAW_EXCEL != RAW_EXCEL:
+        print(
+            "WARNING: Legacy raw workbook path detected at "
+            f"{LEGACY_RAW_EXCEL}. This script only reads {RAW_EXCEL}."
+        )
+    validate_raw_excel_file(RAW_EXCEL)
     excel = pd.ExcelFile(RAW_EXCEL)
     cohorts = []
     expected_rows = 0
@@ -326,6 +349,6 @@ def main() -> None:
     print(metadata)
     print("Done!")
 
+
 if __name__ == "__main__":
     main()
-

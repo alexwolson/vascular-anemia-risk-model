@@ -34,21 +34,13 @@ from run_h2o_automl import train_valid_split
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DATA_PATH = REPO_ROOT / "data" / "processed" / "merged_vqi_2012_2020.parquet"
 METADATA_PATH = REPO_ROOT / "artifacts" / "h2o_automl" / "DEAD_run_metadata.json"
-MODEL_PATH = (
-    REPO_ROOT
-    / "models"
-    / "DEAD"
-    / "GBM_grid_1_AutoML_1_20260209_135152_model_11"
-)
-RAW_EXCEL_PATH = REPO_ROOT / "data" / "VQI_Database_MTAEdits.xlsx"
+RAW_EXCEL_PATH = REPO_ROOT / "data" / "raw" / "VQI_Database_MTAEdits.xlsx"
 OUTPUT_DIR = REPO_ROOT / "output" / "task3_asa"
 
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
-logging.basicConfig(
-    format="%(asctime)s %(levelname)s %(message)s", level=logging.INFO
-)
+logging.basicConfig(format="%(asctime)s %(levelname)s %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
@@ -61,6 +53,23 @@ def ensure_directory(path: Path) -> None:
 
 def load_run_metadata(path: Path) -> dict:
     return json.loads(path.read_text())
+
+
+def resolve_model_path(metadata: dict) -> Path:
+    model_path = metadata.get("gbm_model_path")
+    if not model_path:
+        raise FileNotFoundError(
+            "Run metadata does not contain 'gbm_model_path'. "
+            "Re-run src/run_h2o_automl.py first."
+        )
+
+    path = Path(model_path)
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Model path from run metadata not found: {path}. "
+            "Re-run src/run_h2o_automl.py to regenerate models."
+        )
+    return path
 
 
 def prepare_h2o_frame(
@@ -94,6 +103,7 @@ def main() -> None:
     train_ratio: float = meta["train_ratio"]
     seed: int = meta["seed"]
     stratified: bool = meta["stratified"]
+    model_path = resolve_model_path(meta)
 
     # ---- load dataset -------------------------------------------------
     logger.info("Loading dataset from %s", DATA_PATH)
@@ -112,16 +122,14 @@ def main() -> None:
         stratify=stratified,
         problem_type=problem_type,
     )
-    logger.info(
-        "Train: %d rows, Valid: %d rows", len(train_df), len(valid_df)
-    )
+    logger.info("Train: %d rows, Valid: %d rows", len(train_df), len(valid_df))
 
     # ---- init H2O and load model --------------------------------------
     logger.info("Initialising H2O cluster...")
     h2o.init()
 
-    logger.info("Loading GBM model from %s", MODEL_PATH)
-    model = h2o.load_model(str(MODEL_PATH))
+    logger.info("Loading GBM model from %s", model_path)
+    model = h2o.load_model(str(model_path))
 
     # ---- build validation H2OFrame ------------------------------------
     categorical_predictors = working.select_dtypes(include="category").columns
@@ -137,12 +145,7 @@ def main() -> None:
     # ===================================================================
     logger.info("Computing ASACLASS distribution...")
 
-    asa_counts = (
-        working["ASACLASS"]
-        .value_counts(dropna=False)
-        .sort_index()
-        .rename("n")
-    )
+    asa_counts = working["ASACLASS"].value_counts(dropna=False).sort_index().rename("n")
     asa_pct = (
         working["ASACLASS"]
         .value_counts(normalize=True, dropna=False)
@@ -251,9 +254,7 @@ def main() -> None:
     findings_lines.append("")
 
     matched_predictors = [
-        p
-        for p in predictors
-        if any(kw in p.lower() for kw in urgency_keywords)
+        p for p in predictors if any(kw in p.lower() for kw in urgency_keywords)
     ]
     if matched_predictors:
         findings_lines.append(
@@ -279,14 +280,10 @@ def main() -> None:
         any_match_found = False
         for sheet in sheet_names:
             # Read only header row to get column names
-            header_df = pd.read_excel(
-                RAW_EXCEL_PATH, sheet_name=sheet, nrows=0
-            )
+            header_df = pd.read_excel(RAW_EXCEL_PATH, sheet_name=sheet, nrows=0)
             cols = list(header_df.columns)
             matched_cols = [
-                c
-                for c in cols
-                if any(kw in str(c).lower() for kw in urgency_keywords)
+                c for c in cols if any(kw in str(c).lower() for kw in urgency_keywords)
             ]
             if matched_cols:
                 any_match_found = True
@@ -312,9 +309,7 @@ def main() -> None:
         findings_lines.append("")
 
     # --- 6c: ASA Class 5 (Moribund) as proxy for emergent cases --------
-    findings_lines.append(
-        "3. ASA Class 5 (Moribund) as proxy for emergent cases"
-    )
+    findings_lines.append("3. ASA Class 5 (Moribund) as proxy for emergent cases")
 
     # Convert ASACLASS to numeric for comparison if needed
     asa_values = pd.to_numeric(working["ASACLASS"], errors="coerce")
@@ -328,12 +323,9 @@ def main() -> None:
     mortality_not_asa5 = dead_numeric[asa_values != 5].mean()
 
     findings_lines.append(f"   ASA Class 5 (Moribund) patients: n = {n_asa5}")
+    findings_lines.append(f"   Non-ASA-5 patients: n = {n_not_asa5}")
     findings_lines.append(
-        f"   Non-ASA-5 patients: n = {n_not_asa5}"
-    )
-    findings_lines.append(
-        f"   Mortality rate (ASA=5): {mortality_asa5:.4f} "
-        f"({mortality_asa5 * 100:.1f}%)"
+        f"   Mortality rate (ASA=5): {mortality_asa5:.4f} ({mortality_asa5 * 100:.1f}%)"
         if not np.isnan(mortality_asa5)
         else "   Mortality rate (ASA=5): N/A (no ASA=5 patients)"
     )
@@ -343,9 +335,7 @@ def main() -> None:
     )
     if not np.isnan(mortality_asa5):
         rr = mortality_asa5 / mortality_not_asa5 if mortality_not_asa5 > 0 else np.nan
-        findings_lines.append(
-            f"   Relative risk (ASA=5 vs others): {rr:.2f}x"
-        )
+        findings_lines.append(f"   Relative risk (ASA=5 vs others): {rr:.2f}x")
     findings_lines.append("")
 
     # --- 6d: TRANSFER as proxy for emergent cases ----------------------
@@ -393,9 +383,7 @@ def main() -> None:
                 f"   Relative risk (transferred vs not): {rr_transfer:.2f}x"
             )
     else:
-        findings_lines.append(
-            "   TRANSFER variable not found in the predictor set."
-        )
+        findings_lines.append("   TRANSFER variable not found in the predictor set.")
     findings_lines.append("")
 
     # --- 6e: Summary ---------------------------------------------------
@@ -413,9 +401,7 @@ def main() -> None:
         findings_lines.append(
             "(INFRA, SUPRA, OPEN_AAA) and is included as the 31st predictor in"
         )
-        findings_lines.append(
-            "the GBM model."
-        )
+        findings_lines.append("the GBM model.")
         findings_lines.append("")
         findings_lines.append(
             "URGENCY distribution and mortality rates are reported in the full"
@@ -433,19 +419,13 @@ def main() -> None:
         findings_lines.append(
             "    may capture the highest-acuity patients, many of whom may be"
         )
-        findings_lines.append(
-            "    emergent cases."
-        )
+        findings_lines.append("    emergent cases.")
         findings_lines.append(
             "  - TRANSFER (patient transferred from another facility) may also"
         )
-        findings_lines.append(
-            "    correlate with case urgency."
-        )
+        findings_lines.append("    correlate with case urgency.")
         findings_lines.append("")
-        findings_lines.append(
-            "Both are included as predictors in the GBM model."
-        )
+        findings_lines.append("Both are included as predictors in the GBM model.")
     else:
         findings_lines.append(
             "The VQI dataset used for this analysis does not contain an explicit"
@@ -456,28 +436,20 @@ def main() -> None:
         findings_lines.append(
             "predictors nor the raw Excel source sheets contain columns matching"
         )
-        findings_lines.append(
-            "keywords: emergent, elective, urgency, or emergency."
-        )
+        findings_lines.append("keywords: emergent, elective, urgency, or emergency.")
         findings_lines.append("")
-        findings_lines.append(
-            "Two potential proxies were evaluated:"
-        )
+        findings_lines.append("Two potential proxies were evaluated:")
         findings_lines.append(
             "  - ASA Class 5 (Moribund/not expected to survive without surgery)"
         )
         findings_lines.append(
             "    may capture the highest-acuity patients, many of whom may be"
         )
-        findings_lines.append(
-            "    emergent cases."
-        )
+        findings_lines.append("    emergent cases.")
         findings_lines.append(
             "  - TRANSFER (patient transferred from another facility) may also"
         )
-        findings_lines.append(
-            "    correlate with case urgency."
-        )
+        findings_lines.append("    correlate with case urgency.")
         findings_lines.append("")
         findings_lines.append(
             "Both variables are included as predictors in the GBM model and"

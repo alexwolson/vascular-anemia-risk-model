@@ -10,6 +10,7 @@ ML research project deriving age-specific preoperative hemoglobin thresholds ass
 
 ```bash
 uv sync                                                             # Install/reinstall dependencies (Python 3.11+)
+cp data/VQI_Database_MTAEdits.xlsx data/raw/VQI_Database_MTAEdits.xlsx  # One-time migration if needed
 
 # Pipeline steps (in order)
 uv run python src/build_vqi_dataset.py                             # Harmonise raw VQI Excel → parquet
@@ -44,6 +45,9 @@ H2O requires Java 17: `export PATH="/opt/homebrew/opt/openjdk@17/bin:$PATH"` bef
 data/raw/VQI_Database_MTAEdits.xlsx   (PHI — git-ignored; sheets: INFRA_Database, SUPRA_Database, OPEN_AAA_Database_)
   → src/build_vqi_dataset.py          harmonises 3 cohorts, applies sentinel-value cleaning, writes parquet
   → data/processed/merged_vqi_2012_2020.parquet   (N=85,431; HEMO cleaned to [2,20] g/dL)
+
+Canonical raw input path is `data/raw/VQI_Database_MTAEdits.xlsx`. Legacy path
+`data/VQI_Database_MTAEdits.xlsx` is ignored by the active pipeline scripts.
 
 data/processed/
   → src/run_h2o_automl.py             80/20 stratified split (seed=12345), H2O AutoML, saves best GBM
